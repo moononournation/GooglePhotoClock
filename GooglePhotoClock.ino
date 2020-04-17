@@ -14,11 +14,14 @@
 #define SSID_PASSWORD "PleaseInputYourPasswordHere"
 /* Google Photo settings */
 // replace your Google Photo share link
-#define GOOGLE_PHOTO_SHARE_LINK "https://photos.app.goo.gl/ABCDefGhijklMNoPQ"
+#define GOOGLE_PHOTO_SHARE_LINK "https://photos.app.goo.gl/j9kVKWsfWq9N1jD88"
 #define PHOTO_URL_PREFIX "https://lh3.googleusercontent.com/"
+#define SEEK_PATTERN "id=\"_ij\""
+#define SEARCH_PATTERN "\",[\"" PHOTO_URL_PREFIX
+#define END_PATTERN ",\"" PHOTO_URL_PREFIX
 #define PHOTO_LIMIT 100                                    // first 100 photos add to the list
 #define PHOTO_ID_SIZE 141                                  // the photo ID should be 140 charaters long and then add a zero-tail
-#define PHOTO_FILE_BUFFER 99000                            // 99 kB, a 320 x 480 Google compressed photo should be aroud 60-90 kB
+#define PHOTO_FILE_BUFFER 92160                            // 90 KB, a 320 x 480 Google JPEG compressed photo size (320 x 480 x 3 bytes / 5). Only ESP32 have enough RAM to allocate this buffer
 #define HTTP_TIMEOUT 60000                                 // in ms, wait a while for server processing
 #define PHOTO_URL_TEMPLATE PHOTO_URL_PREFIX "%s=w%d-h%d-c" // photo id, display width and height
 /* NTP settings */
@@ -228,7 +231,6 @@ const uint8_t photos_app_fingerprint[20] = {0xC8, 0x23, 0xC6, 0x3C, 0x59, 0x23, 
 const uint8_t google_com_fingerprint[20] = {0x27, 0xE9, 0x1B, 0x9A, 0xD1, 0x94, 0x8D, 0x27, 0x40, 0x91, 0xA8, 0x87, 0x12, 0x55, 0x3B, 0x63, 0xD6, 0x05, 0xD3, 0x1F};
 const uint8_t lh3_google_fingerprint[20] = {0x40, 0x50, 0xD7, 0xCA, 0x73, 0x60, 0xA7, 0x29, 0x14, 0x4B, 0x9D, 0xD4, 0x03, 0x01, 0x50, 0xB6, 0x1D, 0xA4, 0x1A, 0x21};
 ESP8266WiFiMulti WiFiMulti;
-std::unique_ptr<BearSSL::WiFiClientSecure> client(new BearSSL::WiFiClientSecure);
 #endif
 
 /* time library */
@@ -237,15 +239,15 @@ static time_t now;
 
 /* HTTP */
 const char *headerkeys[] = {"Location"};
-HTTPClient https;
-WiFiClient *httpsStream;
+HTTPClient photoHttps;
+WiFiClient *photoHttpsStream;
 
 /* Google photo */
 char photoIdList[PHOTO_LIMIT][PHOTO_ID_SIZE];
 uint8_t *photoBuf;
 
 /* variables */
-static int w, h, timeX, timeY, len, offset, photoCount = 0;
+static int w, h, timeX, timeY, len, offset, photoCount;
 static unsigned long next_show_millis = 0;
 
 void ntpGetTime()
@@ -262,7 +264,7 @@ void ntpGetTime()
     yield();
     nowSecs = time(nullptr);
   }
-  Serial.print(F(" done."));
+  Serial.println(F(" done."));
 }
 
 void printTime()
@@ -281,97 +283,6 @@ void printTime()
   gfx->setCursor(timeX, timeY);
   gfx->setTextColor(WHITE);
   gfx->printf("%02d:%02d", hour, min);
-}
-
-void getPhotoList(const char *url)
-{
-#if defined(ESP32)
-#else // ESP8266
-  // hack: url tricks to select fingerprint
-  if (url[8] == 'p')
-  {
-    client->setFingerprint(photos_app_fingerprint);
-  }
-  else
-  {
-    client->setFingerprint(google_com_fingerprint);
-  }
-#endif
-  Serial.printf("[HTTPS] begin...\n");
-  https.begin(*client, url);
-
-  Serial.printf("[HTTPS] GET...\n");
-  int httpCode = https.GET();
-
-  Serial.printf("[HTTPS] GET... code: %d\n", httpCode);
-  if (httpCode <= 0)
-  {
-    Serial.printf("[HTTPS] GET... failed, error: %s\n", https.errorToString(httpCode).c_str());
-    https.end();
-    return;
-  }
-
-  // redirect
-  if (httpCode == HTTP_CODE_FOUND)
-  {
-    char redirectUrl[1024];
-    strcpy(redirectUrl, https.header((size_t)0).c_str());
-    Serial.printf("redirectUrl: %s\r\n", redirectUrl);
-    https.end();
-    getPhotoList(redirectUrl);
-    return;
-  }
-
-  if (httpCode != HTTP_CODE_OK)
-  {
-    Serial.printf("[HTTPS] Not OK!\n");
-    https.end();
-    return;
-  }
-
-  // HTTP header has been send and Server response header has been handled
-
-  //find photo ID leading pattern: ",["https://lh3.googleusercontent.com/
-  photoCount = 0;
-  int reads = 0;
-  int wait_count = 0;
-  WiFiClient *stream = https.getStreamPtr();
-  while ((stream->available()) || (wait_count < 5))
-  {
-    if (!stream->available())
-    {
-      delay(200); // wait some time to receive next truck
-      ++wait_count;
-      Serial.printf("reads: %d, wait_count: %d\n", reads, wait_count);
-    }
-    else
-    {
-      String line = stream->readStringUntil('\n');
-      reads += line.length();
-      ++reads; // \n
-      int key_idx = line.indexOf(F("\",[\"" PHOTO_URL_PREFIX));
-      if (key_idx >= 0)
-      {
-        int val_start_idx = key_idx + 38;
-        int val_end_idx = line.indexOf('\"', val_start_idx);
-        String photoId = line.substring(val_start_idx, val_end_idx);
-        strcpy(photoIdList[photoCount], photoId.c_str());
-
-        ++photoCount;
-      }
-    }
-
-#if defined(ESP32)
-    // notify WDT still working
-    feedLoopWDT();
-#else // ESP8266
-    yield();
-#endif
-  }
-  https.end();
-
-  Serial.printf("reads: %d, %d photo ID added.\n", reads, photoCount);
-  return;
 }
 
 void setup()
@@ -412,7 +323,6 @@ void setup()
   enableLoopWDT();
 #else // ESP8266
 #endif
-  https.collectHeaders(headerkeys, sizeof(headerkeys) / sizeof(char *));
 
   // allocate photo file buffer
   photoBuf = (uint8_t *)malloc(PHOTO_FILE_BUFFER);
@@ -441,12 +351,135 @@ void loop()
 
 #if defined(ESP32)
 #else // ESP8266
-      wdt_disable();
+    std::unique_ptr<BearSSL::WiFiClientSecure> client(new BearSSL::WiFiClientSecure);
 #endif
 
     if (!photoCount)
     {
-      getPhotoList(GOOGLE_PHOTO_SHARE_LINK);
+      HTTPClient https;
+      https.collectHeaders(headerkeys, sizeof(headerkeys) / sizeof(char *));
+
+#if defined(ESP32)
+#else // ESP8266
+
+      // std::unique_ptr<BearSSL::WiFiClientSecure> client(new BearSSL::WiFiClientSecure);
+      // hack: url tricks to select fingerprint
+      if (GOOGLE_PHOTO_SHARE_LINK[15] == 'a')
+      {
+        Serial.println("client->setFingerprint(photos_app_fingerprint);");
+        client->setFingerprint(photos_app_fingerprint);
+      }
+      else
+      {
+        Serial.println("client->setFingerprint(google_com_fingerprint);");
+        client->setFingerprint(google_com_fingerprint);
+      }
+#endif
+
+      Serial.println(GOOGLE_PHOTO_SHARE_LINK);
+      Serial.printf("[HTTPS] begin...\n");
+      https.begin(*client, GOOGLE_PHOTO_SHARE_LINK);
+      https.setTimeout(HTTP_TIMEOUT);
+
+      Serial.printf("[HTTPS] GET...\n");
+      int httpCode = https.GET();
+
+      Serial.printf("[HTTPS] GET... code: %d\n", httpCode);
+
+      // redirect
+      if (httpCode == HTTP_CODE_FOUND)
+      {
+        char redirectUrl[1024];
+        strcpy(redirectUrl, https.header((size_t)0).c_str());
+        Serial.printf("redirectUrl: %s\n", redirectUrl);
+        https.end();
+#if defined(ESP32)
+#else // ESP8266
+
+        // std::unique_ptr<BearSSL::WiFiClientSecure> client(new BearSSL::WiFiClientSecure);
+        client->setFingerprint(google_com_fingerprint);
+#endif
+        Serial.printf("[HTTPS] begin...\n");
+        https.begin(*client, redirectUrl);
+        https.setTimeout(HTTP_TIMEOUT);
+
+        Serial.printf("[HTTPS] GET...\n");
+        httpCode = https.GET();
+
+        Serial.printf("[HTTPS] GET... code: %d\n", httpCode);
+      }
+
+      if (httpCode != HTTP_CODE_OK)
+      {
+        Serial.printf("[HTTPS] GET... failed, error: %s\n", https.errorToString(httpCode).c_str());
+        delay(9000); // don't repeat the wrong thing too fast
+        // return;
+      }
+      else
+      {
+        // HTTP header has been send and Server response header has been handled
+
+        //find photo ID leading pattern: ",["https://lh3.googleusercontent.com/
+        photoCount = 0;
+        bool foundStartingPoint = false;
+        bool htmlEnd = false;
+        WiFiClient *stream = https.getStreamPtr();
+        stream->setTimeout(10);
+        while ((photoCount < PHOTO_LIMIT) && (!htmlEnd))
+        {
+          if (!stream->available())
+          {
+            Serial.println(F("Wait stream->available()"));
+            delay(500);
+          }
+          else
+          {
+            if (!foundStartingPoint)
+            {
+              // hack
+              Serial.println(F("finding seek pattern: " SEEK_PATTERN));
+              if (stream->find(SEEK_PATTERN))
+              {
+                Serial.println(F("found seek pattern: " SEEK_PATTERN));
+                foundStartingPoint = true;
+              }
+            }
+            else
+            {
+              String line = stream->readStringUntil('\n');
+              int key_idx = line.indexOf(F(SEARCH_PATTERN));
+              // Serial.println(line);
+              // Serial.printf("key_idx: %d\n", key_idx);
+
+              if (key_idx >= 0)
+              {
+                int val_start_idx = key_idx + sizeof(SEARCH_PATTERN) - 1;
+                int val_end_idx = line.indexOf('\"', val_start_idx);
+                String photoId = line.substring(val_start_idx, val_end_idx);
+                Serial.println(photoId);
+                strcpy(photoIdList[photoCount], photoId.c_str());
+
+                ++photoCount;
+              }
+
+              if (line.indexOf(F(END_PATTERN)) >= 0)
+              {
+                Serial.println(F("found end pattern: " END_PATTERN));
+                htmlEnd = true;
+              }
+            }
+          }
+
+#if defined(ESP32)
+          // notify WDT still working
+          feedLoopWDT();
+#else // ESP8266
+          yield();
+#endif
+        }
+        Serial.printf("%d photo ID added.\n", photoCount);
+      }
+      https.end();
     }
 
     if (photoCount)
@@ -466,61 +499,57 @@ void loop()
 
 #if defined(ESP32)
 #else // ESP8266
+
+      // std::unique_ptr<BearSSL::WiFiClientSecure> client(new BearSSL::WiFiClientSecure);
       client->setFingerprint(lh3_google_fingerprint);
 #endif
       Serial.print("[HTTP] begin...\n");
-      https.begin(*client, photoUrl);
-      https.setTimeout(HTTP_TIMEOUT);
+      photoHttps.begin(*client, photoUrl);
+      photoHttps.setTimeout(HTTP_TIMEOUT);
       Serial.print("[HTTP] GET...\n");
-      int httpCode = https.GET();
+      int httpCode = photoHttps.GET();
 
       Serial.printf("[HTTP] GET... code: %d\n", httpCode);
       // HTTP header has been send and Server response header has been handled
-      if (httpCode <= 0)
+      if (httpCode != HTTP_CODE_OK)
       {
-        Serial.printf("[HTTP] GET... failed, error: %s\n", https.errorToString(httpCode).c_str());
+        Serial.printf("[HTTP] GET... failed, error: %s\n", photoHttps.errorToString(httpCode).c_str());
+        delay(9000); // don't repeat the wrong thing too fast
       }
       else
       {
-        if (httpCode != HTTP_CODE_OK)
+        // get lenght of document (is -1 when Server sends no Content-Length header)
+        len = photoHttps.getSize();
+        Serial.printf("[HTTP] size: %d\n", len);
+
+        if (len <= 0)
         {
-          Serial.printf("[HTTP] Not OK!\n");
-          delay(9000); // don't repeat the wrong thing too fast
+          Serial.printf("[HTTP] Unknow content size: %d\n", len);
         }
         else
         {
-          // get lenght of document (is -1 when Server sends no Content-Length header)
-          len = https.getSize();
-          Serial.printf("[HTTP] size: %d\n", len);
+          // get tcp stream
+          photoHttpsStream = photoHttps.getStreamPtr();
 
-          if (len <= 0)
+          if (photoBuf)
           {
-            Serial.printf("[HTTP] Unknow content size: %d\n", len);
-          }
-          else
-          {
-            // get tcp stream
-            httpsStream = https.getStreamPtr();
-            // JPG decode option 1: http_stream_reader, decode on the fly but slower
-            // esp_jpg_decode(len, JPG_SCALE_NONE, http_stream_reader, tft_writer, NULL /* arg */);
-
-            // JPG decode option 2: buffer_reader, use much more memory but faster
+            // JPG decode option 1: buffer_reader, use much more memory but faster
             size_t r = 0;
             while (r < len)
             {
-              r += httpsStream->readBytes(photoBuf + r, (len - r));
+              r += photoHttpsStream->readBytes(photoBuf + r, (len - r));
               Serial.printf("Photo buffer read: %d/%d\n", r, len);
             }
             esp_jpg_decode(len, JPG_SCALE_NONE, buffer_reader, tft_writer, NULL /* arg */);
           }
+          else
+          {
+            // JPG decode option 2: http_stream_reader, decode on the fly but slower
+            esp_jpg_decode(len, JPG_SCALE_NONE, http_stream_reader, tft_writer, NULL /* arg */);
+          }
         }
       }
-      https.end();
-
-#if defined(ESP32)
-#else // ESP8266
-      wdt_enable(8000);
-#endif
+      photoHttps.end();
     }
 
     // overlay current time on the photo
@@ -540,11 +569,11 @@ static size_t http_stream_reader(void *arg, size_t index, uint8_t *buf, size_t l
   if (buf)
   {
     Serial.printf("[HTTP] read: %d\n", len);
-    size_t a = httpsStream->available();
+    size_t a = photoHttpsStream->available();
     size_t r = 0;
     while (r < len)
     {
-      r += httpsStream->readBytes(buf + r, min((len - r), a));
+      r += photoHttpsStream->readBytes(buf + r, min((len - r), a));
       delay(50);
     }
 
@@ -556,7 +585,7 @@ static size_t http_stream_reader(void *arg, size_t index, uint8_t *buf, size_t l
     int l = len;
     while (l--)
     {
-      httpsStream->read();
+      photoHttpsStream->read();
     }
     return len;
   }
