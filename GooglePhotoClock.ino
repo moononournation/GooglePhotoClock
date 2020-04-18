@@ -241,8 +241,6 @@ static time_t now;
 
 /* HTTP */
 const char *headerkeys[] = {"Location"};
-HTTPClient photoHttps;
-WiFiClient *photoHttpsStream;
 
 /* Google photo */
 char photoIdList[PHOTO_LIMIT][PHOTO_ID_SIZE];
@@ -252,6 +250,7 @@ uint8_t *photoBuf;
 static int w, h, timeX, timeY, len, offset, photoCount;
 static uint8_t textSize;
 static unsigned long next_show_millis = 0;
+static bool shownPhoto = false;
 
 void ntpGetTime()
 {
@@ -280,6 +279,10 @@ void ntpGetTime()
 
 void printTime()
 {
+  if (!shownPhoto)
+  {
+    gfx->fillRect(timeX, timeY, (textSize * 6 * 5) + 2, (textSize * 8) + 2, BLACK);
+  }
   now = time(nullptr);
   const tm *tm = localtime(&now);
   int hour = tm->tm_hour;
@@ -446,8 +449,8 @@ void loop()
         httpCode = https.GET();
 
         gfx->setTextColor(RED);
-        gfx->println(F("[HTTPS] GET... code: "));
-        Serial.println(F("[HTTPS] GET... code: "));
+        gfx->print(F("[HTTPS] GET... code: "));
+        Serial.print(F("[HTTPS] GET... code: "));
         gfx->println(httpCode);
         Serial.println(httpCode);
       }
@@ -471,12 +474,12 @@ void loop()
         int wait_count = 0;
         bool foundStartingPoint = false;
         WiFiClient *stream = https.getStreamPtr();
+        stream->setTimeout(10);
         while ((photoCount < PHOTO_LIMIT) && (wait_count < 5))
         {
           if (!stream->available())
           {
-            gfx->setTextColor(YELLOW);
-            gfx->println(F("Wait stream->available()"));
+            gfx->print('.');
             Serial.println(F("Wait stream->available()"));
             ++wait_count;
             delay(200);
@@ -485,12 +488,12 @@ void loop()
           {
             if (!foundStartingPoint)
             {
-              gfx->setTextColor(YELLOWGREEN);
+              gfx->setTextColor(YELLOW);
               gfx->println(F("finding seek pattern: " SEEK_PATTERN));
               Serial.println(F("finding seek pattern: " SEEK_PATTERN));
               if (stream->find(SEEK_PATTERN))
               {
-                gfx->setTextColor(GREEN);
+                gfx->setTextColor(GREENYELLOW);
                 gfx->println(F("found seek pattern: " SEEK_PATTERN));
                 Serial.println(F("found seek pattern: " SEEK_PATTERN));
                 foundStartingPoint = true;
@@ -528,11 +531,24 @@ void loop()
         gfx->println(F(" photo ID added."));
         Serial.print(photoCount);
         Serial.println(F(" photo ID added."));
+#if defined(ESP32)
+#elif defined(ESP8266)
+        // clean up cache files
+        char filename[16];
+        for (int i = 0; i < photoCount; i++)
+        {
+          sprintf(filename, "/%d.jpg", i);
+          if (File file = SPIFFS.open(filename, "r"))
+          {
+            file.close();
+            SPIFFS.remove(filename);
+          }
+        }
+#endif
       }
       https.end();
     }
-
-    if (photoCount)
+    else // photoCount > 0
     {
       char photoUrl[256];
       // UNCOMMENT FOR DEBUG PHOTO LIST
@@ -544,6 +560,14 @@ void loop()
 
       // setup url query value with LCD dimension
       int randomIdx = random(photoCount);
+#if defined(ESP32)
+#elif defined(ESP8266)
+      File cachePhoto;
+      char filename[16];
+      sprintf(filename, "/%d.jpg", randomIdx);
+      if (!(cachePhoto = SPIFFS.open(filename, "r")))
+      {
+#endif
       sprintf(photoUrl, PHOTO_URL_TEMPLATE, photoIdList[randomIdx], w, h);
       Serial.print(F("Random selected photo #"));
       Serial.print(randomIdx);
@@ -551,10 +575,10 @@ void loop()
       Serial.println(photoUrl);
 
       Serial.println(F("[HTTP] begin..."));
-      photoHttps.begin(*client, photoUrl);
-      photoHttps.setTimeout(HTTP_TIMEOUT);
+      https.begin(*client, photoUrl);
+      https.setTimeout(HTTP_TIMEOUT);
       Serial.println(F("[HTTP] GET..."));
-      int httpCode = photoHttps.GET();
+      int httpCode = https.GET();
 
       Serial.print(F("[HTTP] GET... code: "));
       Serial.println(httpCode);
@@ -562,13 +586,13 @@ void loop()
       if (httpCode != HTTP_CODE_OK)
       {
         Serial.print(F("[HTTP] GET... failed, error: "));
-        Serial.println(photoHttps.errorToString(httpCode));
+        Serial.println(https.errorToString(httpCode));
         delay(9000); // don't repeat the wrong thing too fast
       }
       else
       {
         // get lenght of document (is -1 when Server sends no Content-Length header)
-        len = photoHttps.getSize();
+        len = https.getSize();
         Serial.print(F("[HTTP] size: "));
         Serial.println(len);
 
@@ -580,17 +604,18 @@ void loop()
         else
         {
           // get tcp stream
-          photoHttpsStream = photoHttps.getStreamPtr();
+          WiFiClient *photoHttpsStream = https.getStreamPtr();
 
           if (photoBuf)
           {
             // JPG decode option 1: buffer_reader, use much more memory but faster
-            size_t r = 0;
-            while (r < len)
+            size_t reads = 0;
+            while (reads < len)
             {
-              r += photoHttpsStream->readBytes(photoBuf + r, (len - r));
+              size_t r = photoHttpsStream->readBytes(photoBuf + reads, (len - reads));
+              reads += r;
               Serial.print(F("Photo buffer read: "));
-              Serial.print(r);
+              Serial.print(reads);
               Serial.print('/');
               Serial.println(len);
             }
@@ -599,11 +624,38 @@ void loop()
           else
           {
             // JPG decode option 2: http_stream_reader, decode on the fly but slower
-            esp_jpg_decode(len, JPG_SCALE_NONE, http_stream_reader, tft_writer, NULL /* arg */);
+#if defined(ESP32)
+            esp_jpg_decode(len, JPG_SCALE_NONE, http_stream_reader, tft_writer, &photoHttpsStream /* arg */);
+#elif defined(ESP8266)
+              cachePhoto = SPIFFS.open(filename, "w");
+              uint8_t buf[512];
+              size_t reads = 0;
+              while (reads < len)
+              {
+                size_t r = photoHttpsStream->readBytes(buf, min(sizeof(buf), len - reads));
+                reads += r;
+                cachePhoto.write(buf, r);
+                Serial.print(F("Photo file write: "));
+                Serial.print(reads);
+                Serial.print('/');
+                Serial.println(len);
+              }
+              cachePhoto.close();
+
+              cachePhoto = SPIFFS.open(filename, "r");
+#endif
           }
         }
       }
-      photoHttps.end();
+      https.end();
+
+#if defined(ESP32)
+#elif defined(ESP8266)
+      }
+      esp_jpg_decode(len, JPG_SCALE_NONE, stream_reader, tft_writer, &cachePhoto /* arg */);
+      cachePhoto.close();
+#endif
+      shownPhoto = true;
     }
 
     // overlay current time on the photo
@@ -618,16 +670,17 @@ void loop()
 #endif
 }
 
-static size_t http_stream_reader(void *arg, size_t index, uint8_t *buf, size_t len)
+static size_t stream_reader(void *arg, size_t index, uint8_t *buf, size_t len)
 {
+  Stream *s = (Stream *)arg;
   if (buf)
   {
     // Serial.printf("[HTTP] read: %d\n", len);
-    size_t a = photoHttpsStream->available();
+    size_t a = s->available();
     size_t r = 0;
     while (r < len)
     {
-      r += photoHttpsStream->readBytes(buf + r, min((len - r), a));
+      r += s->readBytes(buf + r, min((len - r), a));
       delay(50);
     }
 
@@ -639,7 +692,7 @@ static size_t http_stream_reader(void *arg, size_t index, uint8_t *buf, size_t l
     int l = len;
     while (l--)
     {
-      photoHttpsStream->read();
+      s->read();
     }
     return len;
   }
