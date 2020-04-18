@@ -18,7 +18,7 @@
 #define PHOTO_URL_PREFIX "https://lh3.googleusercontent.com/"
 #define SEEK_PATTERN "id=\"_ij\""
 #define SEARCH_PATTERN "\",[\"" PHOTO_URL_PREFIX
-#define PHOTO_LIMIT 20                                    // read first 10 photos to the list, ESP32 can add more
+#define PHOTO_LIMIT 20                                     // read first 20 photos to the list, ESP32 can add more
 #define PHOTO_ID_SIZE 141                                  // the photo ID should be 140 charaters long and then add a zero-tail
 #define PHOTO_FILE_BUFFER 92160                            // 90 KB, a 320 x 480 Google JPEG compressed photo size (320 x 480 x 3 bytes / 5). Only ESP32 have enough RAM to allocate this buffer
 #define HTTP_TIMEOUT 60000                                 // in ms, wait a while for server processing
@@ -28,7 +28,7 @@
 #if defined(ESP32)
 #define GMT_OFFSET_SEC 28800L  // Timezone +0800
 #define DAYLIGHT_OFFSET_SEC 0L // no daylight saving
-#else // ESP8266
+#elif defined(ESP8266)
 #define TZ "HKT-8"
 #endif
 /*******************************************************************************
@@ -223,7 +223,7 @@ const char *rootCACertificate =
     "-----END CERTIFICATE-----\n";
 WiFiMulti WiFiMulti;
 WiFiClientSecure *client = new WiFiClientSecure;
-#else // ESP8266
+#elif defined(ESP8266)
 #include "esp_jpg_decode.h"
 #include <ESP8266WiFi.h>
 #include <ESP8266WiFiMulti.h>
@@ -251,6 +251,7 @@ uint8_t *photoBuf;
 
 /* variables */
 static int w, h, timeX, timeY, len, offset, photoCount;
+static uint8_t textSize;
 static unsigned long next_show_millis = 0;
 
 void ntpGetTime()
@@ -258,20 +259,24 @@ void ntpGetTime()
   // Initialize NTP settings
 #if defined(ESP32)
   configTime(GMT_OFFSET_SEC, DAYLIGHT_OFFSET_SEC, NTP_SERVER);
-#else // ESP8266
+#elif defined(ESP8266)
   configTime(TZ, NTP_SERVER);
 #endif
 
   Serial.print(F("Waiting for NTP time sync: "));
+  gfx->setTextColor(BLUE);
+  gfx->print(F("Waiting for NTP time sync: "));
   time_t nowSecs = time(nullptr);
   while (nowSecs < 8 * 3600 * 2)
   {
     delay(500);
     Serial.print('.');
+    gfx->print('.');
     yield();
     nowSecs = time(nullptr);
   }
   Serial.println(asctime(localtime(&nowSecs)));
+  gfx->println(asctime(localtime(&nowSecs)));
 }
 
 void printTime()
@@ -281,6 +286,7 @@ void printTime()
   int hour = tm->tm_hour;
   int min = tm->tm_min;
   // print time with border
+  gfx->setTextSize(textSize);
   gfx->setCursor(timeX - 2, timeY - 2);
   gfx->setTextColor(DARKGREY);
   gfx->printf("%02d:%02d", hour, min);
@@ -301,22 +307,43 @@ void setup()
   gfx->fillScreen(BLACK);
   w = gfx->width();
   h = gfx->height();
-  uint8_t textSize = w / 6 / 5;
-  Serial.print(F("textSize: "));
-  Serial.println(textSize);
-  gfx->setTextSize(textSize);
+  textSize = w / 6 / 5;
   timeX = (w - (textSize * 5 * 6)) / 2;
   timeY = h - (textSize * 8) - 10;
 
+  gfx->setTextSize(1);
+  gfx->setCursor(0, 0);
+  gfx->setTextColor(RED);
+  gfx->println(F("Google Photo Clock"));
+  Serial.println(F("Google Photo Clock"));
+  gfx->setTextColor(YELLOW);
+  gfx->print(F("Screen: "));
+  Serial.print(F("Screen: "));
+  gfx->print(w);
+  Serial.print(w);
+  gfx->print('x');
+  Serial.print('x');
+  gfx->println(h);
+  Serial.println(h);
+  gfx->setTextColor(GREENYELLOW);
+  gfx->print(F("Clock text size: "));
+  Serial.print(F("Clock text size: "));
+  gfx->println(textSize);
+  Serial.println(textSize);
+
   // init WiFi
+  gfx->setTextColor(GREEN);
+  gfx->print(F("Connecting to WiFi: "));
   Serial.print(F("Connecting to WiFi: "));
   WiFi.mode(WIFI_STA);
   WiFiMulti.addAP(SSID_NAME, SSID_PASSWORD);
   while ((WiFiMulti.run() != WL_CONNECTED))
   {
     delay(500);
-    Serial.print(".");
+    gfx->print('.');
+    Serial.print('.');
   }
+  gfx->println(F(" done."));
   Serial.println(F(" done."));
 
   // init time
@@ -329,10 +356,13 @@ void setup()
   // set WDT timeout a little bit longer than HTTP timeout
   esp_task_wdt_init((HTTP_TIMEOUT / 1000) + 1, true);
   enableLoopWDT();
-#else // ESP8266
+#elif defined(ESP8266)
   SPIFFS.begin();
   int numCerts = certStore.initCertStore(SPIFFS, "/certs.idx", "/certs.ar");
+  gfx->setTextColor(MAGENTA);
+  gfx->print(F("Number of CA certs read: "));
   Serial.print(F("Number of CA certs read: "));
+  gfx->println(numCerts);
   Serial.println(numCerts);
   client = new BearSSL::WiFiClientSecure();
   client->setCertStore(&certStore);
@@ -340,6 +370,9 @@ void setup()
 
   // allocate photo file buffer
   photoBuf = (uint8_t *)malloc(PHOTO_FILE_BUFFER);
+
+  // print time on black screen before down load image
+  printTime();
 
 #ifdef TFT_BL
   // finally turn on display backlight
@@ -369,14 +402,25 @@ void loop()
       https.collectHeaders(headerkeys, sizeof(headerkeys) / sizeof(char *));
 
       Serial.println(F(GOOGLE_PHOTO_SHARE_LINK));
+      gfx->setTextSize(1);
+      gfx->setCursor(0, 64);
+      gfx->setTextColor(RED);
+      gfx->println(F(GOOGLE_PHOTO_SHARE_LINK));
+      Serial.println(F(GOOGLE_PHOTO_SHARE_LINK));
+      gfx->println(F("[HTTPS] begin..."));
       Serial.println(F("[HTTPS] begin..."));
       https.begin(*client, F(GOOGLE_PHOTO_SHARE_LINK));
       https.setTimeout(HTTP_TIMEOUT);
 
+      gfx->setTextColor(YELLOW);
+      gfx->println(F("[HTTPS] GET..."));
       Serial.println(F("[HTTPS] GET..."));
       int httpCode = https.GET();
 
+      gfx->setTextColor(GREENYELLOW);
+      gfx->print(F("[HTTPS] return code: "));
       Serial.print(F("[HTTPS] return code: "));
+      gfx->println(httpCode);
       Serial.println(httpCode);
 
       // redirect
@@ -385,23 +429,36 @@ void loop()
         char redirectUrl[256];
         strcpy(redirectUrl, https.header((size_t)0).c_str());
         https.end();
+        gfx->setTextColor(GREEN);
+        gfx->print(F("redirectUrl: "));
         Serial.print(F("redirectUrl: "));
+        gfx->println(redirectUrl);
         Serial.println(redirectUrl);
 
+        gfx->setTextColor(BLUE);
+        gfx->println(F("[HTTPS] begin..."));
         Serial.println(F("[HTTPS] begin..."));
         https.begin(*client, redirectUrl);
         https.setTimeout(HTTP_TIMEOUT);
 
+        gfx->setTextColor(MAGENTA);
+        gfx->println(F("[HTTPS] GET..."));
         Serial.println(F("[HTTPS] GET..."));
         httpCode = https.GET();
 
+        gfx->setTextColor(RED);
+        gfx->println(F("[HTTPS] GET... code: "));
         Serial.println(F("[HTTPS] GET... code: "));
+        gfx->println(httpCode);
         Serial.println(httpCode);
       }
 
       if (httpCode != HTTP_CODE_OK)
       {
+        gfx->setTextColor(YELLOW);
+        gfx->print(F("[HTTPS] GET... failed, error: "));
         Serial.print(F("[HTTPS] GET... failed, error: "));
+        gfx->println(https.errorToString(httpCode));
         Serial.println(https.errorToString(httpCode));
         delay(9000); // don't repeat the wrong thing too fast
         // return;
@@ -419,6 +476,8 @@ void loop()
         {
           if (!stream->available())
           {
+            gfx->setTextColor(YELLOW);
+            gfx->println(F("Wait stream->available()"));
             Serial.println(F("Wait stream->available()"));
             ++wait_count;
             delay(200);
@@ -429,9 +488,11 @@ void loop()
             {
               // hack
               Serial.println(F("finding seek pattern: " SEEK_PATTERN));
+              gfx->println(F("finding seek pattern: " SEEK_PATTERN));
               if (stream->find(SEEK_PATTERN))
               {
                 Serial.println(F("found seek pattern: " SEEK_PATTERN));
+                gfx->println(F("found seek pattern: " SEEK_PATTERN));
                 foundStartingPoint = true;
               }
             }
@@ -448,6 +509,7 @@ void loop()
                 }
                 photoIdList[photoCount][++i] = 0; // zero tail
                 Serial.println(photoIdList[photoCount]);
+                gfx->println(photoIdList[photoCount]);
                 ++photoCount;
               }
             }
@@ -456,12 +518,14 @@ void loop()
 #if defined(ESP32)
           // notify WDT still working
           feedLoopWDT();
-#else // ESP8266
+#elif defined(ESP8266)
           yield();
 #endif
         }
         Serial.print(photoCount);
+        gfx->print(photoCount);
         Serial.println(F(" photo ID added."));
+        gfx->println(F(" photo ID added."));
       }
       https.end();
     }
@@ -547,7 +611,7 @@ void loop()
 #if defined(ESP32)
   // notify WDT still working
   feedLoopWDT();
-#else // ESP8266
+#elif defined(ESP8266)
   yield();
 #endif
 }
@@ -599,7 +663,7 @@ static bool tft_writer(void *arg, uint16_t x, uint16_t y, uint16_t w, uint16_t h
 #if defined(ESP32)
   // notify WDT still working
   feedLoopWDT();
-#else // ESP8266
+#elif defined(ESP8266)
   yield();
 #endif
 
