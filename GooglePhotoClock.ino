@@ -246,7 +246,6 @@ WiFiClient *photoHttpsStream;
 
 /* Google photo */
 char photoIdList[PHOTO_LIMIT][PHOTO_ID_SIZE];
-// char *photoIdList[] = {"tdPp9UaNKVtixRBHtOZC285fsmlfsYcPKzE_IF-9GUxlVPbsTnV2LM3Vjyzdn139T8hrk5hJVBfYnwyRmtQMnC4Zznk6fC7_SNCbefhXm4GxLgMvj3gejDraZUW_x5zB83q6B1r-Jvk"};
 uint8_t *photoBuf;
 
 /* variables */
@@ -305,6 +304,12 @@ void setup()
   // init display
   gfx->begin();
   gfx->fillScreen(BLACK);
+#ifdef TFT_BL
+  // turn on display backlight
+  pinMode(TFT_BL, OUTPUT);
+  digitalWrite(TFT_BL, HIGH);
+#endif
+
   w = gfx->width();
   h = gfx->height();
   textSize = w / 6 / 5;
@@ -373,12 +378,6 @@ void setup()
 
   // print time on black screen before down load image
   printTime();
-
-#ifdef TFT_BL
-  // finally turn on display backlight
-  pinMode(TFT_BL, OUTPUT);
-  digitalWrite(TFT_BL, HIGH);
-#endif
 }
 
 void loop()
@@ -486,13 +485,14 @@ void loop()
           {
             if (!foundStartingPoint)
             {
-              // hack
-              Serial.println(F("finding seek pattern: " SEEK_PATTERN));
+              gfx->setTextColor(YELLOWGREEN);
               gfx->println(F("finding seek pattern: " SEEK_PATTERN));
+              Serial.println(F("finding seek pattern: " SEEK_PATTERN));
               if (stream->find(SEEK_PATTERN))
               {
-                Serial.println(F("found seek pattern: " SEEK_PATTERN));
+                gfx->setTextColor(GREEN);
                 gfx->println(F("found seek pattern: " SEEK_PATTERN));
+                Serial.println(F("found seek pattern: " SEEK_PATTERN));
                 foundStartingPoint = true;
               }
             }
@@ -508,8 +508,9 @@ void loop()
                   c = stream->read();
                 }
                 photoIdList[photoCount][++i] = 0; // zero tail
+                gfx->setTextColor(BLUE);
+                gfx->print('*');
                 Serial.println(photoIdList[photoCount]);
-                gfx->println(photoIdList[photoCount]);
                 ++photoCount;
               }
             }
@@ -522,10 +523,11 @@ void loop()
           yield();
 #endif
         }
-        Serial.print(photoCount);
+        gfx->setTextColor(MAGENTA);
         gfx->print(photoCount);
-        Serial.println(F(" photo ID added."));
         gfx->println(F(" photo ID added."));
+        Serial.print(photoCount);
+        Serial.println(F(" photo ID added."));
       }
       https.end();
     }
