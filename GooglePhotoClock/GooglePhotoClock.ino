@@ -18,7 +18,7 @@
 #define PHOTO_URL_PREFIX "https://lh3.googleusercontent.com/"
 #define SEEK_PATTERN "id=\"_ij\""
 #define SEARCH_PATTERN "\",[\"" PHOTO_URL_PREFIX
-#define PHOTO_LIMIT 20                                     // read first 20 photos to the list, ESP32 can add more
+#define PHOTO_LIMIT 10                                     // read first 10 photos to the list, ESP32 can add more
 #define PHOTO_ID_SIZE 141                                  // the photo ID should be 140 charaters long and then add a zero-tail
 #define PHOTO_FILE_BUFFER 92160                            // 90 KB, a 320 x 480 Google JPEG compressed photo size (320 x 480 x 3 bytes / 5). Only ESP32 have enough RAM to allocate this buffer
 #define HTTP_TIMEOUT 60000                                 // in ms, wait a while for server processing
@@ -281,7 +281,7 @@ void printTime()
 {
   if (!shownPhoto)
   {
-    gfx->fillRect(timeX, timeY, (textSize * 6 * 5) + 2, (textSize * 8) + 2, BLACK);
+    gfx->fillRect(timeX - 2, timeY - 2, (textSize * 6 * 5) + 4, (textSize * 8) + 4, BLACK);
   }
   now = time(nullptr);
   const tm *tm = localtime(&now);
@@ -398,10 +398,10 @@ void loop()
   {
     next_show_millis = ((millis() / 60000L) + 1) * 60000L; // next minute
 
+    HTTPClient https;
+
     if (!photoCount)
     {
-      HTTPClient https;
-
       https.collectHeaders(headerkeys, sizeof(headerkeys) / sizeof(char *));
 
       Serial.println(F(GOOGLE_PHOTO_SHARE_LINK));
@@ -551,8 +551,6 @@ void loop()
     }
     else // photoCount > 0
     {
-      HTTPClient https;
-
       char photoUrl[256];
       // UNCOMMENT FOR DEBUG PHOTO LIST
       // for (int i = 0; i < photoCount; i++)
