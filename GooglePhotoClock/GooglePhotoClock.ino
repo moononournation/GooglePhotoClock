@@ -401,6 +401,7 @@ void loop()
     if (!photoCount)
     {
       HTTPClient https;
+
       https.collectHeaders(headerkeys, sizeof(headerkeys) / sizeof(char *));
 
       Serial.println(F(GOOGLE_PHOTO_SHARE_LINK));
@@ -550,6 +551,8 @@ void loop()
     }
     else // photoCount > 0
     {
+      HTTPClient https;
+
       char photoUrl[256];
       // UNCOMMENT FOR DEBUG PHOTO LIST
       // for (int i = 0; i < photoCount; i++)
