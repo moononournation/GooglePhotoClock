@@ -398,9 +398,10 @@ void loop()
   {
     next_show_millis = ((millis() / 60000L) + 1) * 60000L; // next minute
 
+    HTTPClient https;
+
     if (!photoCount)
     {
-      HTTPClient https;
       https.collectHeaders(headerkeys, sizeof(headerkeys) / sizeof(char *));
 
       Serial.println(F(GOOGLE_PHOTO_SHARE_LINK));
