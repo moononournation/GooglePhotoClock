@@ -396,8 +396,6 @@ void loop()
   }
   else
   {
-    next_show_millis = ((millis() / 60000L) + 1) * 60000L; // next minute
-
     HTTPClient https;
 
     if (!photoCount)
@@ -624,9 +622,9 @@ void loop()
           }
           else
           {
-            // JPG decode option 2: http_stream_reader, decode on the fly but slower
+            // JPG decode option 2: stream_reader, decode on the fly but slower
 #if defined(ESP32)
-            esp_jpg_decode(len, JPG_SCALE_NONE, http_stream_reader, tft_writer, &photoHttpsStream /* arg */);
+            esp_jpg_decode(len, JPG_SCALE_NONE, stream_reader, tft_writer, &photoHttpsStream /* arg */);
 #elif defined(ESP8266)
               cachePhoto = SPIFFS.open(filename, "w");
               uint8_t buf[512];
@@ -656,7 +654,9 @@ void loop()
       esp_jpg_decode(len, JPG_SCALE_NONE, stream_reader, tft_writer, &cachePhoto /* arg */);
       cachePhoto.close();
 #endif
+
       shownPhoto = true;
+      next_show_millis = ((millis() / 60000L) + 1) * 60000L; // next minute
     }
 
     // overlay current time on the photo
