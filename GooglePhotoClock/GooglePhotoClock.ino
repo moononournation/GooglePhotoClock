@@ -279,25 +279,32 @@ void ntpGetTime()
 
 void printTime()
 {
-  if (!shownPhoto)
-  {
-    gfx->fillRect(timeX - 2, timeY - 2, (textSize * 6 * 5) + 4, (textSize * 8) + 4, BLACK);
-  }
   now = time(nullptr);
   const tm *tm = localtime(&now);
   int hour = tm->tm_hour;
   int min = tm->tm_min;
-  // print time with border
-  gfx->setTextSize(textSize);
-  gfx->setCursor(timeX - 2, timeY - 2);
-  gfx->setTextColor(DARKGREY);
-  gfx->printf("%02d:%02d", hour, min);
-  gfx->setCursor(timeX + 2, timeY + 2);
-  gfx->setTextColor(BLACK);
-  gfx->printf("%02d:%02d", hour, min);
-  gfx->setCursor(timeX, timeY);
-  gfx->setTextColor(WHITE);
-  gfx->printf("%02d:%02d", hour, min);
+  // set text size with pixel margin
+  gfx->setTextSize(textSize, textSize, 2);
+  if (!shownPhoto)
+  {
+    // print time with black background
+    gfx->setCursor(timeX, timeY);
+    gfx->setTextColor(WHITE, BLACK);
+    gfx->printf("%02d:%02d", hour, min);
+  }
+  else
+  {
+    // print time with border
+    gfx->setCursor(timeX - 1, timeY - 1);
+    gfx->setTextColor(DARKGREY);
+    gfx->printf("%02d:%02d", hour, min);
+    gfx->setCursor(timeX + 2, timeY + 2);
+    gfx->setTextColor(BLACK);
+    gfx->printf("%02d:%02d", hour, min);
+    gfx->setCursor(timeX, timeY);
+    gfx->setTextColor(WHITE);
+    gfx->printf("%02d:%02d", hour, min);
+  }
 }
 
 void setup()
