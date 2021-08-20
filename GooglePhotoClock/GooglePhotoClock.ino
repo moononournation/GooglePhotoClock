@@ -20,7 +20,6 @@
 #define SEARCH_PATTERN "\",[\"" PHOTO_URL_PREFIX
 #define PHOTO_LIMIT 10                                     // read first 10 photos to the list, ESP32 can add more
 #define PHOTO_ID_SIZE 159                                  // the photo ID should be 158 charaters long and then add a zero-tail
-#define PHOTO_FILE_BUFFER 92160                            // 90 KB, a 320 x 480 Google JPEG compressed photo size (320 x 480 x 3 bytes / 5). Only ESP32 have enough RAM to allocate this buffer
 #define HTTP_TIMEOUT 60000                                 // in ms, wait a while for server processing
 #define HTTP_WAIT_COUNT 10                                 // number of times wait for next HTTP packet trunk
 #define PHOTO_URL_TEMPLATE PHOTO_URL_PREFIX "%s=w%d-h%d-c" // photo id, display width and height
@@ -55,8 +54,7 @@ Arduino_GFX *gfx = create_default_Arduino_GFX();
 #else /* !defined(DISPLAY_DEV_KIT) */
 
 /* More data bus class: https://github.com/moononournation/Arduino_GFX/wiki/Data-Bus-Class */
-Arduino_DataBus *bus = new Arduino_HWSPI(TFT_DC, TFT_CS);
-// Arduino_DataBus *bus = create_default_Arduino_DataBus();
+Arduino_DataBus *bus = create_default_Arduino_DataBus();
 
 /* More display class: https://github.com/moononournation/Arduino_GFX/wiki/Display-Class */
 Arduino_GFX *gfx = new Arduino_ST7796(bus, TFT_RST, 0 /* rotation */, false /* IPS */);
@@ -111,6 +109,9 @@ ESP8266WiFiMulti WiFiMulti;
 BearSSL::WiFiClientSecure *client;
 BearSSL::CertStore certStore;
 #endif
+
+/* file system */
+#include <LittleFS.h>
 
 /* time library */
 #include <time.h>
@@ -244,22 +245,23 @@ void setup()
   // init time
   ntpGetTime();
 
-  // init HTTPClient
-#if defined(ESP32)
-  client->setCACert(rootCACertificate);
-
-  // set WDT timeout a little bit longer than HTTP timeout
-  esp_task_wdt_init((HTTP_TIMEOUT / 1000) + 1, true);
-  enableLoopWDT();
-#elif defined(ESP8266)
-  if (!SPIFFS.begin())
+  // init LittleFS
+  if (!LittleFS.begin())
   {
-    gfx->print(F("SPIFFS init failed!"));
-    Serial.print(F("SPIFFS init failed!"));
+    gfx->print(F("LittleFS init failed!"));
+    Serial.print(F("LittleFS init failed!"));
   }
   else
   {
-    File file = SPIFFS.open("/certs.ar", "r");
+    // init HTTPClient
+#if defined(ESP32)
+    client->setCACert(rootCACertificate);
+
+    // set WDT timeout a little bit longer than HTTP timeout
+    esp_task_wdt_init((HTTP_TIMEOUT / 1000) + 1, true);
+    enableLoopWDT();
+#elif defined(ESP8266)
+    File file = LittleFS.open("/certs.ar", "r");
     if (!file)
     {
       gfx->print(F("File \"/certs.ar\" not found!"));
@@ -268,7 +270,7 @@ void setup()
     else
     {
       file.close();
-      int numCerts = certStore.initCertStore(SPIFFS, "/certs.idx", "/certs.ar");
+      int numCerts = certStore.initCertStore(LittleFS, "/certs.idx", "/certs.ar");
       gfx->setTextColor(MAGENTA);
       gfx->print(F("Number of CA certs read: "));
       Serial.print(F("Number of CA certs read: "));
@@ -277,11 +279,15 @@ void setup()
       client = new BearSSL::WiFiClientSecure();
       client->setCertStore(&certStore);
     }
-  }
 #endif
+  }
 
   // allocate photo file buffer
-  photoBuf = (uint8_t *)malloc(PHOTO_FILE_BUFFER);
+  photoBuf = (uint8_t *)malloc(w * h * 3 / 5);
+  if (!photoBuf)
+  {
+    Serial.println(F("photoBuf allocate failed!"));
+  }
 
   // print time on black screen before down load image
   printTime();
@@ -441,10 +447,10 @@ void loop()
         for (int i = 0; i < photoCount; i++)
         {
           sprintf(filename, "/%d.jpg", i);
-          if (File file = SPIFFS.open(filename, "r"))
+          if (File file = LittleFS.open(filename, "r"))
           {
             file.close();
-            SPIFFS.remove(filename);
+            LittleFS.remove(filename);
           }
         }
 #endif
@@ -463,102 +469,105 @@ void loop()
 
       // setup url query value with LCD dimension
       int randomIdx = random(photoCount);
-#if defined(ESP32)
-#elif defined(ESP8266)
       File cachePhoto;
       char filename[16];
       sprintf(filename, "/%d.jpg", randomIdx);
-      if (!(cachePhoto = SPIFFS.open(filename, "r")))
+      if (!(cachePhoto = LittleFS.open(filename, "r")))
       {
-#endif
-      sprintf(photoUrl, PHOTO_URL_TEMPLATE, photoIdList[randomIdx], w, h);
-      Serial.print(F("Random selected photo #"));
-      Serial.print(randomIdx);
-      Serial.print(':');
-      Serial.println(photoUrl);
+        sprintf(photoUrl, PHOTO_URL_TEMPLATE, photoIdList[randomIdx], w, h);
+        Serial.print(F("Random selected photo #"));
+        Serial.print(randomIdx);
+        Serial.print(':');
+        Serial.println(photoUrl);
 
-      Serial.println(F("[HTTP] begin..."));
-      https.begin(*client, photoUrl);
-      https.setTimeout(HTTP_TIMEOUT);
-      Serial.println(F("[HTTP] GET..."));
-      int httpCode = https.GET();
+        Serial.println(F("[HTTP] begin..."));
+        https.begin(*client, photoUrl);
+        https.setTimeout(HTTP_TIMEOUT);
+        Serial.println(F("[HTTP] GET..."));
+        int httpCode = https.GET();
 
-      Serial.print(F("[HTTP] GET... code: "));
-      Serial.println(httpCode);
-      // HTTP header has been send and Server response header has been handled
-      if (httpCode != HTTP_CODE_OK)
-      {
-        Serial.print(F("[HTTP] GET... failed, error: "));
-        Serial.println(https.errorToString(httpCode));
-        delay(9000); // don't repeat the wrong thing too fast
-      }
-      else
-      {
-        // get lenght of document (is -1 when Server sends no Content-Length header)
-        len = https.getSize();
-        Serial.print(F("[HTTP] size: "));
-        Serial.println(len);
-
-        if (len <= 0)
+        Serial.print(F("[HTTP] GET... code: "));
+        Serial.println(httpCode);
+        // HTTP header has been send and Server response header has been handled
+        if (httpCode != HTTP_CODE_OK)
         {
-          Serial.print(F("[HTTP] Unknow content size: "));
-          Serial.println(len);
+          Serial.print(F("[HTTP] GET... failed, error: "));
+          Serial.println(https.errorToString(httpCode));
+          delay(9000); // don't repeat the wrong thing too fast
         }
         else
         {
-          // get tcp stream
-          WiFiClient *photoHttpsStream = https.getStreamPtr();
+          // get lenght of document (is -1 when Server sends no Content-Length header)
+          len = https.getSize();
+          Serial.print(F("[HTTP] size: "));
+          Serial.println(len);
 
-          if (photoBuf)
+          if (len <= 0)
           {
-            // JPG decode option 1: buffer_reader, use much more memory but faster
-            size_t reads = 0;
-            while (reads < len)
-            {
-              size_t r = photoHttpsStream->readBytes(photoBuf + reads, (len - reads));
-              reads += r;
-              Serial.print(F("Photo buffer read: "));
-              Serial.print(reads);
-              Serial.print('/');
-              Serial.println(len);
-            }
-            esp_jpg_decode(len, JPG_SCALE_NONE, buffer_reader, tft_writer, NULL /* arg */);
+            Serial.print(F("[HTTP] Unknow content size: "));
+            Serial.println(len);
           }
           else
           {
-            // JPG decode option 2: stream_reader, decode on the fly but slower
-#if defined(ESP32)
-            esp_jpg_decode(len, JPG_SCALE_NONE, stream_reader, tft_writer, &photoHttpsStream /* arg */);
-#elif defined(ESP8266)
-              cachePhoto = SPIFFS.open(filename, "w");
-              uint8_t buf[512];
+            // get tcp stream
+            WiFiClient *photoHttpsStream = https.getStreamPtr();
+
+            if (photoBuf)
+            {
+              // JPG decode option 1: buffer_reader, use much more memory but faster
               size_t reads = 0;
               while (reads < len)
               {
-                size_t r = photoHttpsStream->readBytes(buf, min(sizeof(buf), len - reads));
+                size_t r = photoHttpsStream->readBytes(photoBuf + reads, (len - reads));
                 reads += r;
-                cachePhoto.write(buf, r);
-                Serial.print(F("Photo file write: "));
+                Serial.print(F("Photo buffer read: "));
                 Serial.print(reads);
                 Serial.print('/');
                 Serial.println(len);
               }
-              cachePhoto.close();
+              esp_jpg_decode(len, JPG_SCALE_NONE, buffer_reader, tft_writer, NULL /* arg */);
+            }
+            else
+            {
+              // JPG decode option 2: download to cache file
+              Serial.print(F("Cache photo: "));
+              Serial.println(filename);
+              cachePhoto = LittleFS.open(filename, "w");
+              if (cachePhoto)
+              {
+                uint8_t buf[512];
+                size_t reads = 0;
+                while (reads < len)
+                {
+                  size_t r = photoHttpsStream->readBytes(buf, min(sizeof(buf), len - reads));
+                  reads += r;
+                  cachePhoto.write(buf, r);
+                  // Serial.print(F("Photo file write: "));
+                  // Serial.print(reads);
+                  // Serial.print('/');
+                  // Serial.println(len);
+                }
+                cachePhoto.close();
 
-              cachePhoto = SPIFFS.open(filename, "r");
-#endif
+                cachePhoto = LittleFS.open(filename, "r");
+              }
+              else
+              {
+                // JPG decode option 3: stream_reader, decode on the fly but slower
+                esp_jpg_decode(len, JPG_SCALE_NONE, stream_reader, tft_writer, &photoHttpsStream /* arg */);
+              }
+            }
           }
         }
+        https.end();
       }
-      https.end();
-
-#if defined(ESP32)
-#elif defined(ESP8266)
+      if (cachePhoto)
+      {
+        Serial.print(F("Load cache photo: "));
+        Serial.println(filename);
+        esp_jpg_decode(cachePhoto.size(), JPG_SCALE_NONE, stream_reader, tft_writer, &cachePhoto /* arg */);
+        cachePhoto.close();
       }
-      esp_jpg_decode(len, JPG_SCALE_NONE, stream_reader, tft_writer, &cachePhoto /* arg */);
-      cachePhoto.close();
-#endif
-
       shownPhoto = true;
       next_show_millis = ((millis() / 60000L) + 1) * 60000L; // next minute
     }
