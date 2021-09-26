@@ -111,7 +111,12 @@ BearSSL::CertStore certStore;
 #endif
 
 /* file system */
+#if defined(ESP32)
+#include <FFat.h>
+// #include <LittleFS.h>
+#elif defined(ESP8266)
 #include <LittleFS.h>
+#endif
 
 /* time library */
 #include <time.h>
@@ -245,11 +250,16 @@ void setup()
   // init time
   ntpGetTime();
 
-  // init LittleFS
+  // init file system
+#if defined(ESP32)
+  if (!FFat.begin())
+  // if (!LittleFS.begin())
+#elif defined(ESP8266)
   if (!LittleFS.begin())
+#endif
   {
-    gfx->print(F("LittleFS init failed!"));
-    Serial.print(F("LittleFS init failed!"));
+    gfx->print(F("File system init failed!"));
+    Serial.print(F("File system init failed!"));
   }
   else
   {
@@ -472,7 +482,12 @@ void loop()
       File cachePhoto;
       char filename[16];
       sprintf(filename, "/%d.jpg", randomIdx);
+#if defined(ESP32)
+      if (!(cachePhoto = FFat.open(filename, "r")))
+      // if (!(cachePhoto = LittleFS.open(filename, "r")))
+#elif defined(ESP8266)
       if (!(cachePhoto = LittleFS.open(filename, "r")))
+#endif
       {
         sprintf(photoUrl, PHOTO_URL_TEMPLATE, photoIdList[randomIdx], w, h);
         Serial.print(F("Random selected photo #"));
@@ -532,7 +547,12 @@ void loop()
               // JPG decode option 2: download to cache file
               Serial.print(F("Cache photo: "));
               Serial.println(filename);
+#if defined(ESP32)
+              cachePhoto = FFat.open(filename, "w");
+              // cachePhoto = LittleFS.open(filename, "w");
+#elif defined(ESP8266)
               cachePhoto = LittleFS.open(filename, "w");
+#endif
               if (cachePhoto)
               {
                 uint8_t buf[512];
@@ -549,7 +569,12 @@ void loop()
                 }
                 cachePhoto.close();
 
+#if defined(ESP32)
+                cachePhoto = FFat.open(filename, "r");
+                // cachePhoto = LittleFS.open(filename, "r");
+#elif defined(ESP8266)
                 cachePhoto = LittleFS.open(filename, "r");
+#endif
               }
               else
               {
